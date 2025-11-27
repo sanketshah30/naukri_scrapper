@@ -6,44 +6,159 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
+import requests
 import json
 import time
 
+
+def scrape_naukri_jobs_simple(url, location, max_results=20, debug=False):
+    """
+    Simpler fallback scraper that uses requests + BeautifulSoup only.
+    This is used in environments (like Railway) where Chrome is not available.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    try:
+        if debug:
+            print(f"[Fallback] Fetching URL via requests: {url}")
+
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as e:
+        if debug:
+            print(f"[Fallback] Error fetching URL: {e}")
+        return []
+
+    jobs = []
+    seen_urls = set()
+
+    # Heuristic: job links usually contain "/job-" in the path
+    job_links = soup.find_all("a", href=lambda x: x and "/job-" in x)[: max_results * 3]
+
+    if debug:
+        print(f"[Fallback] Found {len(job_links)} potential job links")
+
+    for link in job_links:
+        try:
+            job_url = link.get("href", "")
+            if not job_url:
+                continue
+
+            if not job_url.startswith("http"):
+                job_url = f"https://www.naukri.com{job_url}"
+
+            if job_url in seen_urls:
+                continue
+            seen_urls.add(job_url)
+
+            title = link.get("title") or link.text.strip()
+            if not title or len(title) < 3:
+                continue
+
+            parent = link.find_parent(["article", "div"]) or soup
+            company = "Not specified"
+            experience = "Not specified"
+            salary = "Not disclosed"
+            job_location = location
+
+            # Company name
+            comp_elem = parent.find(
+                ["a", "span", "div"],
+                class_=lambda c: c and "comp" in str(c).lower(),
+            )
+            if comp_elem:
+                company = comp_elem.text.strip()
+
+            # Other metadata
+            for span in parent.find_all("span"):
+                text = span.text.strip()
+                lower = text.lower()
+                if any(x in lower for x in ["yr", "year", "exp"]):
+                    experience = text
+                elif any(x in lower for x in ["lakh", "crore", "salary", "pa"]):
+                    salary = text
+                elif any(
+                    city in lower
+                    for city in [
+                        "bangalore",
+                        "mumbai",
+                        "delhi",
+                        "hyderabad",
+                        "pune",
+                        "chennai",
+                        "gurgaon",
+                        "noida",
+                    ]
+                ):
+                    job_location = text
+
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company,
+                    "experience": experience,
+                    "salary": salary,
+                    "location": job_location,
+                    "url": job_url,
+                    "platform": "Naukri",
+                }
+            )
+
+            if len(jobs) >= max_results:
+                break
+
+        except Exception as e:
+            if debug:
+                print(f"[Fallback] Error parsing job link: {e}")
+            continue
+
+    if debug:
+        print(f"[Fallback] Returning {len(jobs)} jobs")
+
+    return jobs
+
+
 def scrape_naukri_jobs(keywords, location, max_results=20, debug=False):
-    """Naukri scraper using Selenium to handle JavaScript-rendered content"""
-    
-    search_query = keywords.lower().replace(' ', '-')
-    url = f'https://www.naukri.com/{search_query}-jobs-in-{location.lower()}'
-    
+    """Naukri scraper using Selenium to handle JavaScript-rendered content."""
+
+    search_query = keywords.lower().replace(" ", "-")
+    url = f"https://www.naukri.com/{search_query}-jobs-in-{location.lower()}"
+
     # Setup Chrome options
     chrome_options = Options()
-    chrome_options.add_argument('--headless')  # Run in background
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_argument("--headless")  # Run in background
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-    
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+    chrome_options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+
     driver = None
     try:
         if debug:
             print(f"Fetching URL: {url}")
-        
+
         # Initialize Chrome driver
         try:
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
         except Exception as chrome_error:
-            error_msg = str(chrome_error)
-            if "cannot find Chrome binary" in error_msg or "Chrome" in error_msg:
-                print("\n" + "="*60)
-                print("ERROR: Chrome browser not found!")
-                print("="*60)
-                print("Please install Google Chrome from: https://www.google.com/chrome/")
-                print("Or you can try using Firefox by modifying the code.")
-                print("="*60 + "\n")
-            raise
+            # In environments without Chrome (e.g. Railway), fall back to requests-based scraping
+            if debug:
+                print("Chrome WebDriver failed, falling back to simple scraper.")
+                print(f"Chrome error: {chrome_error}")
+            return scrape_naukri_jobs_simple(url, location, max_results, debug)
         
         # Navigate to the page
         driver.get(url)
