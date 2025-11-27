@@ -41,7 +41,7 @@ def scrape():
     location = data.get('location', 'Mumbai')
     max_results = data.get('max_results', 20)
     
-    jobs = scrape_naukri_jobs(keywords, location, max_results)
+    jobs = scrape_naukri_jobs(keywords, location, max_results, debug=True)
     
     return jsonify({
         'success': True,
