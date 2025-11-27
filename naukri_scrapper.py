@@ -39,8 +39,16 @@ def scrape_naukri_jobs_simple(url, location, max_results=20, debug=False):
     jobs = []
     seen_urls = set()
 
-    # Heuristic: job links usually contain "/job-" in the path
-    job_links = soup.find_all("a", href=lambda x: x and "/job-" in x)[: max_results * 3]
+    # Heuristic: job links usually contain "job-listings" or related patterns in the path
+    job_links = soup.find_all(
+        "a",
+        href=lambda x: x
+        and (
+            "/job-listings" in x
+            or "/job-" in x
+            or "/job/" in x
+        ),
+    )[: max_results * 3]
 
     if debug:
         print(f"[Fallback] Found {len(job_links)} potential job links")
