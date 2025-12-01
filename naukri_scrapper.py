@@ -4,6 +4,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import requests
@@ -429,6 +430,132 @@ def scrape_naukri_jobs(keywords, location, max_results=20, debug=False):
     finally:
         if driver:
             driver.quit()
+
+
+def apply_to_naukri_job(job_url, email, password, cover_letter=None, debug=False):
+    """
+    Minimal auto-apply helper that:
+      1) Logs into Naukri with the given credentials
+      2) Opens the given job_url
+      3) Clicks an 'Apply' / 'Apply Now' button
+      4) Optionally fills a cover letter text area if present
+
+    This is intended to run on a local machine where Chrome is installed.
+    """
+
+    chrome_options = Options()
+    # For local debugging it's helpful to see the browser; change to headless if desired
+    chrome_options.add_argument("--start-maximized")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+
+    driver = None
+    try:
+        if debug:
+            print("=== apply_to_naukri_job ===")
+            print("Job URL:", job_url)
+
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        wait = WebDriverWait(driver, 30)
+
+        # 1) Go to login page
+        driver.get("https://www.naukri.com/nlogin/login")
+        if debug:
+            print("Opened Naukri login page")
+
+        # Email / username
+        email_input = wait.until(
+            EC.presence_of_element_located((By.NAME, "username"))
+        )
+        email_input.clear()
+        email_input.send_keys(email)
+
+        # Password
+        pwd_input = driver.find_element(By.NAME, "password")
+        pwd_input.clear()
+        pwd_input.send_keys(password)
+
+        # Click login button
+        login_btn = driver.find_element(
+            By.XPATH,
+            "//button[contains(., 'Login') or contains(., 'Sign in') or contains(., 'sign in')]",
+        )
+        login_btn.click()
+
+        # Wait for some logged-in indicator (header nav etc.)
+        try:
+            wait.until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "[data-ga-track='Main Navigation'], header")
+                )
+            )
+            if debug:
+                print("Login seems successful")
+        except TimeoutException:
+            if debug:
+                print("Login confirmation timed out, proceeding anyway")
+
+        # 2) Open the job URL
+        driver.get(job_url)
+        if debug:
+            print("Opened job page")
+
+        # 3) Click an Apply button
+        try:
+            apply_btn = wait.until(
+                EC.element_to_be_clickable(
+                    (
+                        By.XPATH,
+                        "//button[contains(., 'Apply') or contains(., 'Apply Now')]",
+                    )
+                )
+            )
+            apply_btn.click()
+            if debug:
+                print("Clicked Apply button")
+        except TimeoutException:
+            raise Exception("Apply button not found on job page")
+
+        # 4) Optionally fill a cover-letter box if present
+        if cover_letter:
+            try:
+                textarea = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located(
+                        (
+                            By.XPATH,
+                            "//textarea[contains(@name, 'cover') or "
+                            "contains(@placeholder, 'cover') or "
+                            "contains(@placeholder, 'Cover Letter')]",
+                        )
+                    )
+                )
+                textarea.clear()
+                textarea.send_keys(cover_letter)
+                if debug:
+                    print("Filled cover letter")
+            except TimeoutException:
+                if debug:
+                    print("No cover letter textarea found; skipping")
+
+        # Wait briefly to let any confirmation render
+        time.sleep(3)
+        page_source = driver.page_source.lower()
+        success = "applied" in page_source or "application submitted" in page_source
+
+        return {
+            "job_url": job_url,
+            "applied_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "cover_letter_used": bool(cover_letter),
+            "status_text": "Applied (best-effort)"
+            if success
+            else "Apply clicked; please verify manually on Naukri.",
+        }
+
+    finally:
+        if driver:
+            driver.quit()
+
 
 if __name__ == '__main__':
     results = scrape_naukri_jobs('Senior Product Manager', 'Bangalore', 10, debug=True)
